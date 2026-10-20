@@ -1,0 +1,26 @@
+import Foundation
+import CoreFoundation
+var checks=0
+func check(_ condition: @autoclosure ()->Bool,_ label: String) { if !condition() { fatalError("FAIL: "+label) }; checks+=1 }
+func rejects(_ body: () throws -> Void) -> Bool { do { try body(); return false } catch { return true } }
+let key=Data([1,2,3,4,5]), clear=Data("HomeDeck native request fixture".utf8)
+check(rc4(key,clear).base64EncodedString() == "eMTRooZuYgu/TY9ZNh3S/wFDXJlU29zfOfbvBHS7bg==", "RC4 drop1024 external fixture")
+check(rc4(key,rc4(key,clear)) == clear,"RC4 roundtrip")
+check(!Network.loginURL(URL(string:"http://account.xiaomi.com")!),"reject http")
+check(!Network.loginURL(URL(string:"https://account.xiaomi.com.evil.example")!),"reject deceptive host")
+check(!Network.loginURL(URL(string:"https://account.xiaomi.com:444")!),"reject non-TLS port")
+check(Network.loginURL(URL(string:"https://c3.lp.account.xiaomi.com")!),"valid polling subdomain")
+let spec: [String:Any] = ["services": [2,3].map { sid in ["iid":sid,"type":"urn:miot-spec-v2:service:switch:0000780C:test:1","properties":[["iid":1,"type":"urn:miot-spec-v2:property:on:00000006:test:1","format":"bool","access":["read","write"]],["iid":2,"type":"urn:miot-spec-v2:property:mode:00000008:test:1","format":"uint8","access":["read","write"],"value-range":[0,1,1]]]] } ]
+let record=parseDevice(["did":"fixture.s3","model":"xiaomi.switch.fixture","name":"测试"],spec,"fixture-user")!
+check(record.did == "fixture", "strip suffix for cloud routing")
+check(record.controls.count == 1 && str(record.controls[0]["id"]) == "3.1", "split service iid and exclude switch config")
+check(rejects { _=try validatedValue(record.controls[0],1) },"reject numeric power write")
+check((try! validatedValue(record.controls[0],true)) as? Bool == true,"explicit power value")
+let brightness: [String:Any]=["name":"brightness","format":"uint16","range":[1.0,65535.0,1.0],"options":[[String:Any]]()]
+check((try! validatedValue(brightness,1)) as? Double == 1,"brightness low endpoint")
+check((try! validatedValue(brightness,100)) as? Double == 65535,"brightness high endpoint")
+check(rejects { _=try validatedValue(brightness,101) },"reject brightness out of range")
+check(rejects { _=try validatedValue(brightness,Double.nan) },"reject NaN")
+let enumControl: [String:Any]=["name":"mode","format":"uint8","options":[["value":2.0,"label":"制热"]]]
+check(rejects { _=try validatedValue(enumControl,1) },"reject unsupported enum")
+print("PASS \(checks) native protocol/control checks; no network, credentials or device writes")

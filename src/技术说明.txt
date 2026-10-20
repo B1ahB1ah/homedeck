@@ -1,0 +1,31 @@
+家控台分享版 v0.3.0
+
+构建：安装 Apple Command Line Tools 后执行 ./build.sh；输出到源码目录的上一级。
+测试：执行 ./test.sh。15 项离线检查，不联网、不读取登录、不操作家庭设备。
+运行：macOS 13+；通用二进制包含 Intel x86_64 与 Apple Silicon arm64。
+
+组件：
+Cloud.swift：独立二维码登录、域名校验、临时 URLSession、钥匙串、云请求签名/加密。
+Devices.swift：家庭云目录、MIoT 公共规格、通道解析、属性查询/写入、手动场景。
+Models.swift：界面状态、账号/家庭切换、收藏隔离、定时刷新。
+Onboarding.swift：二维码与家庭选择页。
+Views.swift / TouchBar.swift：主面板和 Touch Bar。
+TouchBarBridge.m：系统全局 Touch Bar 入口，运行时检查私有 API。
+
+登录信息只写入 macOS 钥匙串 service=app.homedeck.share.xiaomi.cn。
+家庭选择和收藏保存在自己的 UserDefaults。应用包与源码不包含账号、家庭目录或登录缓存。
+不读取 ~/Library/Group Containers/group.com.xiaomi.mihome，不调用 Python、快捷指令或局域网扫描。
+只支持中国大陆区，尚未覆盖全部设备/属性；未识别规格的设备不生成控制按钮。
+云端状态不等于物理现场确认。写操作只发一次，失败或不确定时不自动重试。
+场景显示米家返回的动作摘要，不能保证云端返回所有嵌套动作。
+登录过期时在“家庭与账号”中续期或退出后重新扫码。
+
+协议核对的公开来源（本项目使用 Swift 独立实现）：
+https://github.com/Do1e/mijia-api/blob/main/mijiaAPI/apis.py
+https://github.com/Squachen/micloud/blob/master/micloud/miutils.py
+https://github.com/XiaoMi/ha_xiaomi_home/blob/main/custom_components/xiaomi_home/miot/miot_spec.py
+本软件不是小米官方客户端，扫码/云端接口及 Touch Bar 私有 API 未来可能变化。
+
+签名：当前使用 ad-hoc 本地签名，无 Developer ID 和 Apple 公证。
+以后正式分发需由发布者提供自己的 Developer ID 签名与公证环境。
+不要将别人的登录令牌写入源码或复制到 App 包。

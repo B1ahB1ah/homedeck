@@ -1,0 +1,12 @@
+.DS_Store
+*.app/
+*.zip
+.build/
+build/
+DerivedData/
+*.xcuserstate
+.env
+.env.*
+*.keychain*
+*.p12
+*.mobileprovision
