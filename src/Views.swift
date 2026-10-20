@@ -96,7 +96,7 @@ struct HomeView: View {
             VStack(alignment:.leading,spacing:8) {
                 HStack(spacing:6) { Circle().fill(model.globalAvailable ? Theme.mint : .orange).frame(width:5,height:5); Text(model.globalAvailable ? "全局入口已注册" : "菜单栏常驻").font(.system(size:10,weight:.medium)) }
                 Text("关闭窗口后仍运行\n从菜单栏或 Touch Bar 唤出").font(.system(size:10)).lineSpacing(4).foregroundColor(Theme.muted)
-                Text("v0.3.1 · 独立版").font(.system(size:9,design:.monospaced)).foregroundColor(Theme.muted.opacity(0.6)).padding(.top,7)
+                Text("v0.3.2 · 独立版").font(.system(size:9,design:.monospaced)).foregroundColor(Theme.muted.opacity(0.6)).padding(.top,7)
             }
         }.padding(.horizontal,18).padding(.vertical,24).background(Color.black.opacity(0.16))
     }

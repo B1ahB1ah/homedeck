@@ -7,6 +7,9 @@ final class HomeTouch: NSObject, NSTouchBarDelegate, NSScrubberDataSource, NSScr
     let contentID = NSTouchBarItem.Identifier("app.homedeck.share.content")
     var tray: NSCustomTouchBarItem!
     var content: NSCustomTouchBarItem?
+    // Keep the exported root view alive for the entire Touch Bar item lifetime.
+    // Replacing NSCustomTouchBarItem.view during a cloud refresh can detach its remote view.
+    let row = NSStackView(frame:NSRect(x:0,y:0,width:950,height:30))
     var visible = false
     var scrubber: NSScrubber?
     var changeControl: Control?
@@ -14,6 +17,9 @@ final class HomeTouch: NSObject, NSTouchBarDelegate, NSScrubberDataSource, NSScr
     var optionPages: [String:Int] = [:]
     init(model: HomeModel) {
         self.model = model; super.init()
+        row.orientation = .horizontal; row.spacing = 7; row.alignment = .centerY
+        row.widthAnchor.constraint(equalToConstant:950).isActive = true
+        row.heightAnchor.constraint(equalToConstant:30).isActive = true
         bar.delegate = self
         bar.defaultItemIdentifiers = [contentID]
         bar.principalItemIdentifier = contentID
@@ -25,6 +31,7 @@ final class HomeTouch: NSObject, NSTouchBarDelegate, NSScrubberDataSource, NSScr
     }
     deinit { HDRemoveTray(tray) }
     @objc func show() {
+        model.touchMode = .overview
         update()
         visible = HDShowBar(bar,trayID.rawValue)
         model.barVisible=visible; model.requestStates()
@@ -62,12 +69,13 @@ final class HomeTouch: NSObject, NSTouchBarDelegate, NSScrubberDataSource, NSScr
     func report() {
         let root = FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask).first!.appendingPathComponent("HomeDeckShare")
         try? FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
-        let obj: [String:Any] = ["trayRegistered":model.globalAvailable,"presentationRequested":visible,"devices":model.devices.count,"scenes":model.scenes.count,"busy":model.busy,"page":model.page.rawValue,"date":ISO8601DateFormatter().string(from:Date())]
+        let obj: [String:Any] = ["trayRegistered":model.globalAvailable,"presentationRequested":visible,"devices":model.devices.count,"scenes":model.scenes.count,"busy":model.busy,"page":model.page.rawValue,"viewReady":content != nil,"rootSubviews":row.arrangedSubviews.count,"rootWidth":row.frame.width,"rootHeight":row.frame.height,"date":ISO8601DateFormatter().string(from:Date())]
         if let data = try? JSONSerialization.data(withJSONObject:obj,options:.prettyPrinted) { try? data.write(to:root.appendingPathComponent("diagnostics.json"),options:.atomic) }
     }
     func touchBar(_ touchBar: NSTouchBar,makeItemForIdentifier identifier: NSTouchBarItem.Identifier) -> NSTouchBarItem? {
         guard identifier == contentID else { return nil }
         content = NSCustomTouchBarItem(identifier:identifier)
+        content!.view = row
         update(); return content
     }
     func button(_ title: String, _ action: Selector, tint: NSColor = .darkGray, width: CGFloat = 48) -> NSButton {
@@ -84,9 +92,10 @@ final class HomeTouch: NSObject, NSTouchBarDelegate, NSScrubberDataSource, NSScr
         return t
     }
     func update() {
-        report()
-        guard let item = content else { return }
-        let row = NSStackView(); row.orientation = .horizontal; row.spacing = 7; row.alignment = .centerY
+        guard content != nil else { report(); return }
+        scrubber?.delegate = nil; scrubber?.dataSource = nil; scrubber = nil
+        changeControl = nil; selectedOptions = []
+        for view in row.arrangedSubviews { row.removeArrangedSubview(view); view.removeFromSuperview() }
         row.addArrangedSubview(button("×",#selector(close),width:30))
         switch model.touchMode {
         case .overview:
@@ -161,9 +170,8 @@ final class HomeTouch: NSObject, NSTouchBarDelegate, NSScrubberDataSource, NSScr
                 row.addArrangedSubview(text("不自动重试",width:100,color:.lightGray))
             }
         }
-        row.widthAnchor.constraint(equalToConstant:950).isActive = true
-        row.heightAnchor.constraint(equalToConstant:30).isActive = true
-        item.view = row
+        row.layoutSubtreeIfNeeded()
+        report()
     }
     func numberOfItems(for scrubber: NSScrubber) -> Int { model.page == .scenes ? model.filteredScenes.count : model.filteredDevices.count }
     func scrubber(_ scrubber: NSScrubber,viewForItemAt index: Int) -> NSScrubberItemView {
