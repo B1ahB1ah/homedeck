@@ -1,7 +1,7 @@
-家控台分享版 v0.3.0
+家控台分享版 v0.3.1
 
 构建：安装 Apple Command Line Tools 后执行 ./build.sh；输出到源码目录的上一级。
-测试：执行 ./test.sh。15 项离线检查，不联网、不读取登录、不操作家庭设备。
+测试：执行 ./test.sh。36 项离线检查，不联网、不读取登录、不操作家庭设备。
 运行：macOS 13+；通用二进制包含 Intel x86_64 与 Apple Silicon arm64。
 
 组件：
@@ -29,3 +29,5 @@ https://github.com/XiaoMi/ha_xiaomi_home/blob/main/custom_components/xiaomi_home
 签名：当前使用 ad-hoc 本地签名，无 Developer ID 和 Apple 公证。
 以后正式分发需由发布者提供自己的 Developer ID 签名与公证环境。
 不要将别人的登录令牌写入源码或复制到 App 包。
+
+v0.3.1：states 路由仅查询已有目录的属性；完整目录/场景在首次登录或手动刷新时更新。前台10秒、后台60秒，操作后2/5/10/20/26秒安排跟踪，超过25秒标记未确认。有限跟踪只发读请求。标准fan-control无需on属性即可入目录；已核对厂家私有日常属性按型号适配，不公开工程配置。

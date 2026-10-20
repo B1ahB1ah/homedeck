@@ -1,8 +1,36 @@
 import Foundation
 import CoreFoundation
 
-let labels=["on":"电源","brightness":"亮度","color-temperature":"色温","target-temperature":"目标温度","fan-level":"风速","mode":"模式"]
-let translations=["Auto":"自动","Cool":"制冷","Dry":"除湿","Heat":"制热","Fan":"送风","Normal":"普通","Low":"低档","High":"高档","Reading":"阅读","Office":"办公","Leisure":"休闲","Warmth":"温馨","Computer":"电脑"]
+let labels=["on":"电源","brightness":"亮度","color-temperature":"色温","target-temperature":"目标温度","fan-level":"风速档位","mode":"运行模式",
+    "horizontal-swing":"左右摆风","vertical-swing":"上下摆风","horizontal-swing-included-angle":"左右摆风角度","vertical-swing-included-angle":"上下摆风角度",
+    "wind-direction":"送风方式","vertical-position":"上下定格","horizontal-position":"左右定格","wind-sensation":"柔风",
+    "eco":"节能模式","heater":"辅助加热","dryer":"干燥防霉","sleep-mode":"睡眠模式","heat-level":"加热档位",
+    "speed-level":"无级风速","off-delay-time":"定时关机","swing-all":"立体摆风","off-to-center":"关机回正","fan-percent":"风量（0自动 / 101强劲）",
+    "delay":"定时关机","delay-time":"关机倒计时","delay-remain-time":"剩余时间","screen":"显示屏","indicator-light":"指示灯",
+    "temperature":"室内温度","relative-humidity":"室内湿度","electric-power":"当前功率"]
+let translations=["Auto":"自动","Cool":"制冷","Dry":"除湿","Heat":"制热","Fan":"送风","Normal":"普通","Low":"低档","Medium":"中档","High":"高档","Reading":"阅读","Office":"办公","Leisure":"休闲","Warmth":"温馨","Computer":"电脑",
+    "Straight Wind":"直吹风","Natural Wind":"自然风","Smart":"智能风","Sleep":"睡眠风","Off":"关闭"]
+func choiceLabel(_ row: [String:Any]) -> String {
+    if let comment=row["comment"] as? String, comment.unicodeScalars.contains(where:{ (0x4E00...0x9FFF).contains($0.value) }) { return comment.trimmingCharacters(in:.whitespacesAndNewlines) }
+    let text=str(row["description"])
+    if text.hasPrefix("Level"), let level=Int(text.dropFirst(5)) { return "\(level)档" }
+    return translations[text] ?? (text.isEmpty ? str(row["value"]) : text)
+}
+// Deliberate daily-use allowlist. Device setup, pairing and engineering services are excluded.
+func allowedProperty(_ service: String,_ name: String,_ model: String) -> Bool {
+    let standard: [String:Set<String>] = [
+        "light":["on","brightness","color-temperature","mode"], "switch":["on"],
+        "fan":["on","fan-level","mode","horizontal-swing","vertical-swing","horizontal-swing-included-angle","vertical-swing-included-angle"],
+        "air-conditioner":["on","mode","target-temperature","eco","heater","dryer","sleep-mode"],
+        "heater":["on","target-temperature","heat-level","mode"],
+        "fan-control":["fan-level","horizontal-swing","vertical-swing","wind-direction","vertical-position","horizontal-position","wind-sensation"],
+        "environment":["temperature","relative-humidity"], "power-consumption":["electric-power"],
+        "screen":["on"],"indicator-light":["on"], "delay":["delay","delay-time","delay-remain-time"]]
+    if standard[service]?.contains(name) == true { return true }
+    if model == "dmaker.fan.p28" { return service == "off-delay-time" && name == "off-delay-time" || service == "dm-service" && ["speed-level","swing-all","off-to-center"].contains(name) }
+    if model == "xiaomi.airc.h61h00" { return service == "enhance" && name == "fan-percent" }
+    return false
+}
 func typeName(_ x: Any?) -> String { let s=str(x).split(separator:":"); return s.count > 3 ? String(s[3]) : "" }
 struct DeviceRecord {
     var data: [String:Any]
@@ -16,27 +44,35 @@ func parseDevice(_ row: [String:Any],_ spec: [String:Any],_ uid: String) -> Devi
     let split=fullDid.range(of:#"\.s[0-9]+$"#,options:.regularExpression)
     let siid=split.flatMap { Int(fullDid[$0].dropFirst(2)) }
     let did=split.map { String(fullDid[..<$0.lowerBound]) } ?? fullDid
-    var channels=[[String:Any]](), kind="light"
-    for service in spec["services"] as? [[String:Any]] ?? [] {
+    let services=spec["services"] as? [[String:Any]] ?? []
+    let mainKinds=["light","switch","fan","air-conditioner","heater"]
+    guard let primary=services.first(where:{ mainKinds.contains(typeName($0["type"])) && (siid == nil || ($0["iid"] as? Int) == siid) }) else { return nil }
+    var kind=typeName(primary["type"]), channels=[[String:Any]]()
+    for service in services {
         guard let sid=service["iid"] as? Int, siid == nil || siid == sid else { continue }
         let serviceKind=typeName(service["type"])
-        guard ["light","switch","fan","air-conditioner","heater"].contains(serviceKind) else { continue }
         var controls=[[String:Any]]()
         for p in service["properties"] as? [[String:Any]] ?? [] {
-            let name=typeName(p["type"]), access=p["access"] as? [String] ?? [], format=str(p["format"])
-            guard let label=labels[name], let pid=p["iid"] as? Int, access.contains("read"), access.contains("write"), serviceKind != "switch" || name == "on", name != "on" || format == "bool" else { continue }
+            let rawName=typeName(p["type"]), access=p["access"] as? [String] ?? [], format=str(p["format"])
+            guard allowedProperty(serviceKind,rawName,model), let pid=p["iid"] as? Int, access.contains("read") else { continue }
+            let name=rawName == "on" && ["screen","indicator-light"].contains(serviceKind) ? serviceKind : rawName
+            guard let label=labels[name] else { continue }
+            let writable=access.contains("write") && !["temperature","relative-humidity","electric-power","delay-remain-time"].contains(name)
+            guard ["bool","float","double","uint8","uint16","uint32","int8","int16","int32"].contains(format), name != "on" || format == "bool" else { continue }
             let options=(p["value-list"] as? [[String:Any]] ?? []).compactMap { v -> [String:Any]? in
                 guard let n=v["value"] as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() else { return nil }
-                let text=str(v["description"]); return ["value":n,"label":translations[text] ?? (text.isEmpty ? str(n) : text)]
+                return ["value":n,"label":choiceLabel(v)]
             }
-            var control: [String:Any]=["id":"\(sid).\(pid)","name":name,"label":label,"format":format,"options":options,"siid":sid,"piid":pid]
+            var control: [String:Any]=["id":"\(sid).\(pid)","name":name,"label":label,"format":format,"options":options,"siid":sid,"piid":pid,"writable":writable,"section":mainKinds.contains(serviceKind) || serviceKind == "fan-control" ? "主要控制" : serviceKind == "environment" || serviceKind == "power-consumption" ? "环境状态" : "更多控制"]
             if let range=p["value-range"] as? [Double], range.count == 3, range.allSatisfy(\.isFinite), range[2]>0, range[1]>=range[0] { control["range"]=range }
-            if name != "on", options.isEmpty, control["range"] == nil { continue }
+            if format != "bool", writable, options.isEmpty, control["range"] == nil { continue }
+            let units=["celsius":"°C","percentage":"%","kelvin":"K","hours":"小时","minutes":"分钟","arcdegrees":"°","watt":"W"]
+            control["unitSymbol"]=units[str(p["unit"])] ?? (name == "off-delay-time" ? "分钟" : name == "speed-level" || name == "fan-percent" ? "%" : name.contains("angle") ? "°" : "")
             controls.append(control)
         }
-        if controls.contains(where:{ str($0["name"]) == "on" }) { kind=serviceKind; channels.append(["id":str(sid),"name":"通道\(channels.count+1)","controls":controls]) }
+        if !controls.isEmpty { channels.append(["id":str(sid),"name":serviceKind,"controls":controls]) }
     }
-    guard !channels.isEmpty else { return nil }
+    guard channels.contains(where:{ ($0["controls"] as? [[String:Any]] ?? []).contains(where:{ str($0["name"]) == "on" }) }) else { return nil }
     if model.split(separator:".").dropFirst().first == "switch" { kind="switch" }
     let data: [String:Any]=["id":opaque(uid,fullDid),"name":str(row["name"]),"model":model,"kind":kind,"group":["fan","air-conditioner","heater"].contains(kind) ? "温控" : "灯光","channels":channels,"cachedOnline":(row["isOnline"] as? Bool ?? false)]
     return DeviceRecord(data:data,did:did)
@@ -44,7 +80,8 @@ func parseDevice(_ row: [String:Any],_ spec: [String:Any],_ uid: String) -> Devi
 func validatedValue(_ control: [String:Any],_ value: Any) throws -> Any {
     let name=str(control["name"])
     guard let n=value as? NSNumber else { throw CloudError("无效控制值。") }
-    if name == "on" { guard CFGetTypeID(n) == CFBooleanGetTypeID() else { throw CloudError("电源值必须明确为开或关。") }; return n.boolValue }
+    guard control["writable"] as? Bool != false else { throw CloudError("此属性仅供读取。") }
+    if str(control["format"]) == "bool" { guard CFGetTypeID(n) == CFBooleanGetTypeID() else { throw CloudError("电源值必须明确为开或关。") }; return n.boolValue }
     guard CFGetTypeID(n) != CFBooleanGetTypeID(), n.doubleValue.isFinite else { throw CloudError("无效控制数值。") }
     var x=n.doubleValue
     let range=control["range"] as? [Double]
@@ -117,7 +154,7 @@ final class NativeBackend {
                     var state=result[i].data["state"] as? [String:Any] ?? [:], item: [String:Any]=["code":row["code"] as? Int ?? -1]
                     if row["code"] as? Int == 0 {
                         if let n=row["value"] as? NSNumber {
-                            if str(p["name"]) == "on" { if n.doubleValue == 0 || n.doubleValue == 1 { item["value"]=n.boolValue } else { item["code"] = -1 } }
+                            if str(p["format"]) == "bool" { if n.doubleValue == 0 || n.doubleValue == 1 { item["value"]=n.boolValue } else { item["code"] = -1 } }
                             else if CFGetTypeID(n) != CFBooleanGetTypeID(), n.doubleValue.isFinite {
                                 item["value"]=n
                                 if str(p["name"]) == "brightness", let r=p["range"] as? [Double], r.count==3 { item["percent"]=r[1]>r[0] ? max(1,min(100,Int((1+(n.doubleValue-r[0])/(r[1]-r[0])*99).rounded()))) : 100 }
@@ -169,6 +206,12 @@ final class NativeBackend {
             try await discover(); records=try await read(records)
             response["devices"]=records.map(\.data); response["unsupported"]=unsupported
             do { response["scenes"]=try await scenes() } catch { response["scenes"]=[[String:Any]](); response["warnings"]=[error.localizedDescription] }
+        case "states":
+            let wanted=command["devices"] as? [String]
+            let indices=records.indices.filter { wanted == nil || wanted!.contains(records[$0].id) }
+            let refreshed=try await read(indices.map { records[$0] })
+            for (i,d) in zip(indices,refreshed) { records[i]=d }
+            response["devices"]=refreshed.map(\.data)
         case "set":
             guard let index=records.firstIndex(where:{$0.id == str(command["device"])}), let control=records[index].controls.first(where:{str($0["id"]) == str(command["control"])}), let raw=command["value"] else { throw CloudError("设备或属性不在当前家庭目录中，请刷新。") }
             let value=try validatedValue(control,raw), d=records[index]
@@ -181,6 +224,7 @@ final class NativeBackend {
                 records[index]=fresh
                 if let state=fresh.data["state"] as? [String:[String:Any]], let property=state[str(control["id"])], property["code"] as? Int == 0, let n=property["value"] as? NSNumber, let target=value as? NSNumber { confirmed=n == target }
             }
+            response["expected"]=["deviceID":d.id,"controlID":str(control["id"]),"value":value]
             response["device"]=records[index].data; response["readbackConfirmed"]=confirmed; response["message"]=confirmed ? "设置已回读确认" : "指令已接受，回读尚未确认，请刷新状态。"
         case "scene":
             _=try await scenes()

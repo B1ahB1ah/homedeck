@@ -36,11 +36,18 @@ final class AppDelegate: NSObject,NSApplicationDelegate,NSWindowDelegate,NSMenuD
         window.minSize = NSSize(width:1060,height:770)
         window.delegate = self; window.isReleasedWhenClosed = false
         window.touchBar = touch.bar
+        NSWorkspace.shared.notificationCenter.addObserver(self,selector:#selector(didWake),name:NSWorkspace.didWakeNotification,object:nil)
         window.center(); showWindow(); model.start()
     }
     func menuWillOpen(_ menu: NSMenu) { loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off }
-    @objc func showWindow() { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps:true) }
+    @objc func showWindow() { model.windowVisible=true; window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps:true); model.requestStates() }
+    func windowWillClose(_ notification: Notification) { model.windowVisible=false }
+    func windowDidMiniaturize(_ notification: Notification) { model.windowVisible=false }
+    func windowDidDeminiaturize(_ notification: Notification) { model.windowVisible=true; model.requestStates() }
+    func windowDidBecomeKey(_ notification: Notification) { model.windowVisible=true; model.requestStates() }
+    func applicationDidBecomeActive(_ notification: Notification) { model.requestStates() }
     @objc func showBar() { if model.globalAvailable { touch.show() } else { showWindow(); model.failed = true; model.message = "当前系统未提供全局 Touch Bar 接口，仍可从主面板控制。" } }
+    @objc func didWake() { model.requestStates() }
     @objc func refresh() { model.refresh() }
     @objc func toggleLogin() {
         do {

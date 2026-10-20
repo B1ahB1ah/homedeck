@@ -23,4 +23,73 @@ check(rejects { _=try validatedValue(brightness,101) },"reject brightness out of
 check(rejects { _=try validatedValue(brightness,Double.nan) },"reject NaN")
 let enumControl: [String:Any]=["name":"mode","format":"uint8","options":[["value":2.0,"label":"制热"]]]
 check(rejects { _=try validatedValue(enumControl,1) },"reject unsupported enum")
-print("PASS \(checks) native protocol/control checks; no network, credentials or device writes")
+
+
+func property(_ id: Int,_ name: String,_ format: String = "bool",_ access: [String] = ["read","write"]) -> [String:Any] {
+    var p: [String:Any]=["iid":id,"type":"urn:miot-spec-v2:property:\(name):00000000:test:1","format":format,"access":access]
+    if format != "bool" { p["value-range"]=[0.0,100.0,1.0] }; return p
+}
+func service(_ id: Int,_ name: String,_ props: [[String:Any]]) -> [String:Any] { ["iid":id,"type":"urn:miot-spec-v2:service:\(name):00000000:test:1","properties":props] }
+let acSpec: [String:Any]=["services":[service(2,"air-conditioner",[property(1,"on"),property(4,"target-temperature","float"),property(7,"eco")]),service(3,"fan-control",[property(2,"fan-level","uint8"),property(3,"horizontal-swing"),property(4,"vertical-swing")]),service(4,"environment",[property(7,"temperature","float",["read"])]),service(6,"indicator-light",[property(1,"on")]),service(39,"system-parm",[property(1,"inner-unit-parm","uint8")])]]
+let ac=parseDevice(["did":"fixture-ac","model":"xiaomi.airc.fixture","name":"测试空调"],acSpec,"fixture-user")!
+check(ac.controls.contains { str($0["id"]) == "3.2" },"AC fan-control without a power property survives")
+check(ac.controls.contains { str($0["id"]) == "3.4" && str($0["format"]) == "bool" },"AC swing bool exposed")
+check(ac.controls.contains { str($0["name"]) == "temperature" && $0["writable"] as? Bool == false },"environment is read only")
+check(!ac.controls.contains { str($0["id"]) == "39.1" },"engineering properties excluded")
+check(ac.controls.filter { str($0["name"]) == "on" }.count == 1,"indicator never overrides device power")
+check(choiceLabel(["comment":"防直吹","description":"Direct Blowing Prevention"]) == "防直吹","MIoT Chinese comments preferred")
+check(choiceLabel(["description":"Natural Wind"]) == "自然风","fan modes translated")
+check(allowedProperty("dm-service","speed-level","dmaker.fan.p28"),"profile allows verified fan speed")
+check(!allowedProperty("dm-service","speed-level","unverified.fan.fixture"),"vendor profile limited to matching model")
+check(rejects { _=try validatedValue(["name":"temperature","format":"float","writable":false],20) },"read only writes rejected")
+let eco=ac.controls.first { str($0["name"]) == "eco" }!
+check((try! validatedValue(eco,true)) as? Bool == true,"boolean supplementary controls accepted")
+check(rejects { _=try validatedValue(eco,1) },"numeric values cannot masquerade as boolean")
+
+Task { @MainActor in
+    do {
+        var credentials=Credentials(); credentials.ssecurity=Data([1,2,3]).base64EncodedString()
+        let backend=NativeBackend(auth:credentials,home:CloudHome(id:"1",name:"Fixture",owner:"1")); backend.records=[ac]
+        var writes=0, reads=0
+        backend.client.requestOverride = { path,payload in
+            let params=payload["params"] as? [[String:Any]] ?? []
+            if path == "/miotspec/prop/set" {
+                writes+=1
+                return params.map { ["did":$0["did"]!,"siid":$0["siid"]!,"piid":$0["piid"]!,"code":0] }
+            }
+            guard path == "/miotspec/prop/get" else { throw CloudError("Unexpected test request") }
+            reads+=1
+            return params.map { row -> [String:Any] in
+                let sid=row["siid"] as! Int, pid=row["piid"] as! Int
+                let p=ac.controls.first { str($0["id"]) == "\(sid).\(pid)" }!
+                let value: Any = str(p["format"]) == "bool" ? (sid==2 && pid==1 ? reads>=2 : true) : 20.0
+                return ["did":row["did"]!,"siid":sid,"piid":pid,"code":0,"value":value]
+            }
+        }
+        let first=try await backend.handle(["action":"set","device":ac.id,"control":"2.1","value":true])
+        check(first.readbackConfirmed == false && first.expected != nil,"delayed cloud value remains unconfirmed")
+        let model=HomeModel(); model.backend=backend; model.devices=[first.device!]
+        model.pending["fixture"]=PendingChange(expected:first.expected!,expires:Date().addingTimeInterval(25))
+        let second=try await backend.handle(["action":"states","devices":[ac.id]])
+        model.devices=second.devices!; model.reconcilePending()
+        check(model.pending.isEmpty,"follow-up read reconciles pending command")
+        check(writes == 1 && reads == 2,"reconciliation queries never resend mutation")
+        let d=second.devices![0], c=d.controls.first { $0.id == "3.4" }!
+        check(d.boolean(c) == true,"read parser preserves non-power booleans")
+        check(d.power == true,"device power unaffected by supplementary switches")
+        let off=WriteExpectation(deviceID:ac.id,controlID:"2.1",value:.bool(false))
+        model.pending["timeout"]=PendingChange(expected:off,expires:Date().addingTimeInterval(-1)); model.reconcilePending()
+        check(model.pending.isEmpty && model.failed,"timed-out command reported without fabricated state")
+        check(d.power == true,"timeout leaves actual reported state intact")
+        let thermal=WriteExpectation(deviceID:ac.id,controlID:"2.4",value:.number(20))
+        check(thermal.matches(d),"numeric readback matches normalized target")
+        // Exercise the model's scheduled follow-up, not just the backend helpers.
+        reads=0; writes=0; model.devices=[first.device!]; model.set(model.devices[0],model.devices[0].powerControl!,true)
+        try await Task.sleep(nanoseconds:3_500_000_000)
+        check(writes == 1 && reads>=2 && model.pending.isEmpty && model.devices[0].power == true,"model schedules delayed readback and updates UI state")
+        model.readbackTask?.cancel()
+        print("PASS \(checks) offline protocol, climate and delayed-state regression checks; no real credentials/network/devices")
+        exit(0)
+    } catch { print("FAIL: \(error.localizedDescription)"); exit(1) }
+}
+dispatchMain()

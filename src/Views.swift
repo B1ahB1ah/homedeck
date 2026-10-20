@@ -43,7 +43,7 @@ struct HomeView: View {
                                 if model.page == .scenes {
                                     ForEach(model.filteredScenes) { s in SceneTile(scene:s,selected:model.selectedSceneID == s.id) { model.selectScene(s) } }
                                 } else {
-                                    ForEach(model.filteredDevices) { d in DeviceTile(device:d,selected:model.selectedDeviceID == d.id,favorite:model.favorites.contains(d.id),select:{model.selectDevice(d)},star:{model.toggleFavorite(d)}) }
+                                    ForEach(model.filteredDevices) { d in DeviceTile(device:d,selected:model.selectedDeviceID == d.id,favorite:model.favorites.contains(d.id),syncStatus:model.pendingText(d.id),select:{model.selectDevice(d)},star:{model.toggleFavorite(d)}) }
                                 }
                             }.padding(.bottom,4)
                             if model.page == .favorites && model.filteredDevices.isEmpty { Text("在设备卡片上点星标，加入常用。无需执行设备操作。").foregroundColor(Theme.muted).padding(30) }
@@ -96,7 +96,7 @@ struct HomeView: View {
             VStack(alignment:.leading,spacing:8) {
                 HStack(spacing:6) { Circle().fill(model.globalAvailable ? Theme.mint : .orange).frame(width:5,height:5); Text(model.globalAvailable ? "全局入口已注册" : "菜单栏常驻").font(.system(size:10,weight:.medium)) }
                 Text("关闭窗口后仍运行\n从菜单栏或 Touch Bar 唤出").font(.system(size:10)).lineSpacing(4).foregroundColor(Theme.muted)
-                Text("v0.3.0 · 独立版").font(.system(size:9,design:.monospaced)).foregroundColor(Theme.muted.opacity(0.6)).padding(.top,7)
+                Text("v0.3.1 · 独立版").font(.system(size:9,design:.monospaced)).foregroundColor(Theme.muted.opacity(0.6)).padding(.top,7)
             }
         }.padding(.horizontal,18).padding(.vertical,24).background(Color.black.opacity(0.16))
     }
@@ -111,7 +111,7 @@ struct HomeView: View {
                 HStack(spacing:15) {
                     Text("\(model.devices.count) 设备"); Text("\(model.scenes.count) 场景"); Text("\(model.activeCount) 开启").foregroundColor(Theme.mint)
                 }.font(.system(size:11,weight:.medium,design:.rounded))
-                Text("\(model.readableCount) 个电源状态可读 · 60秒自动刷新").font(.system(size:10)).foregroundColor(Theme.muted)
+                Text("\(model.readableCount) 个电源状态可读 · 前台10秒 / 后台60秒刷新").font(.system(size:10)).foregroundColor(Theme.muted)
             }
             Button { model.refresh() } label: { Image(systemName:"arrow.clockwise").font(.system(size:16,weight:.medium)).frame(width:36,height:36).panel(.white.opacity(0.06),radius:12) }.disabled(model.busy).padding(.leading,8)
         }
@@ -125,6 +125,7 @@ struct HomeView: View {
 }
 struct DeviceTile: View {
     let device: Device; let selected, favorite: Bool
+    var syncStatus: String? = nil
     var select: () -> Void; var star: () -> Void
     var tint: Color { device.group == "温控" ? .cyan : .orange }
     var body: some View {
@@ -135,7 +136,7 @@ struct DeviceTile: View {
                     Text(device.name).font(.system(size:14,weight:.semibold)).lineLimit(1)
                     HStack(spacing:5) {
                         Circle().fill(device.power == nil ? Color.orange : device.power == true ? Theme.mint : Theme.muted.opacity(0.55)).frame(width:4,height:4)
-                        Text(device.power == nil ? "状态未确认" : device.power == true ? "已开启" : "已关闭").font(.system(size:10)).foregroundColor(Theme.muted)
+                        Text(syncStatus != nil ? "待云端确认…" : device.power == nil ? "状态未确认" : device.power == true ? "已开启" : "已关闭").font(.system(size:10)).foregroundColor(Theme.muted)
                         Spacer()
                         if let brightness = device.controls.first(where: { $0.name == "brightness" }), device.numeric(brightness) != nil { Text(device.display(brightness)).font(.system(size:10,design:.monospaced)).foregroundColor(Theme.muted) }
                     }
@@ -184,12 +185,19 @@ struct DeviceDetail: View {
                         Button { model.set(device,power,false) } label: { Text("关闭") }.buttonStyle(PillButton(tint:.white.opacity(0.75)))
                     }.disabled(model.busy || device.power == nil)
                 }
+                if let status=model.pendingText(device.id) { Label(status,systemImage:"clock.arrow.circlepath").font(.system(size:11)).foregroundColor(.orange) }
                 Divider().overlay(.white.opacity(0.05))
-                ForEach(device.controls.filter { $0.name != "on" }) { control in ControlEditor(device:device,control:control,model:model) }
+                ForEach(["主要控制","更多控制","环境状态"],id:\.self) { section in
+                    let controls=device.controls.filter { $0.name != "on" && ($0.section ?? "主要控制") == section }
+                    if !controls.isEmpty {
+                        Text(section).font(.system(size:10,weight:.bold)).foregroundColor(Theme.muted).padding(.top,5)
+                        ForEach(controls) { control in ControlEditor(device:device,control:control,model:model).id(device.id+"/"+control.id) }
+                    }
+                }
                 if device.controls.count == 1 { Text("此设备提供明确的开／关控制。").font(.system(size:11)).foregroundColor(Theme.muted).padding(.vertical,10) }
                 Spacer(minLength:8)
                 Text(device.model).font(.system(size:9,design:.monospaced)).foregroundColor(Theme.muted.opacity(0.6)).textSelection(.enabled)
-                Text("拖动结束后发送一次设置，并回读确认。").font(.system(size:10)).lineSpacing(4).foregroundColor(Theme.muted)
+                Text("操作后持续查询状态；显示云端回读结果。").font(.system(size:10)).lineSpacing(4).foregroundColor(Theme.muted)
             }.padding(20)
         }.scrollIndicators(.hidden).panel(Theme.card)
     }
@@ -198,23 +206,47 @@ struct ControlEditor: View {
     let device: Device, control: Control
     @ObservedObject var model: HomeModel
     @State var draft: Double = 1
+    @State var editing = false
     var limits: ClosedRange<Double> { if control.name == "brightness" { return 1...100 }; if let r = control.range, r.count >= 2, r[0] < r[1] { return r[0]...r[1] }; return 0...1 }
     var step: Double { control.name == "brightness" ? 1 : control.range?.last ?? 1 }
     var body: some View {
         VStack(alignment:.leading,spacing:10) {
-            HStack { Text(control.label).font(.system(size:12,weight:.medium)); Spacer(); Text(device.display(control)).font(.system(size:11,design:.monospaced)).foregroundColor(Theme.muted) }
-            if !control.options.isEmpty {
+            HStack { Text(control.label).font(.system(size:12,weight:.medium)); Spacer(); Text(editing ? String(format:"%g",draft)+control.unit : device.display(control)).font(.system(size:11,design:.monospaced)).foregroundColor(Theme.muted) }
+            if !control.isWritable {
+                EmptyView()
+            } else if control.format == "bool" {
+                HStack(spacing:10) {
+                    Button("开启") { model.set(device,control,true) }.buttonStyle(PillButton(tint:device.boolean(control) == true ? Theme.mint : .gray))
+                    Button("关闭") { model.set(device,control,false) }.buttonStyle(PillButton(tint:device.boolean(control) == false ? .cyan : .gray))
+                }
+            } else if !control.options.isEmpty {
                 Picker("",selection:Binding(get:{device.numeric(control) ?? -999},set:{model.set(device,control,$0)})) {
                     if device.numeric(control) == nil { Text("未确认").tag(-999.0) }
                     ForEach(control.options,id:\.value) { option in Text(option.label).tag(option.value) }
                 }.labelsHidden().pickerStyle(.menu)
             } else if control.range != nil {
-                Slider(value:$draft,in:limits,step:step,onEditingChanged:{ editing in if !editing { model.set(device,control,draft) } }).tint(control.name == "color-temperature" ? .orange : Theme.mint)
+                if control.name == "off-delay-time" {
+                    HStack(spacing:8) {
+                        ForEach([0,30,60,120],id:\.self) { minutes in
+                            if limits.contains(Double(minutes)) {
+                                Button(minutes == 0 ? "取消" : minutes<60 ? "30分" : "\(minutes/60)时") { model.set(device,control,Double(minutes)) }.buttonStyle(PillButton(tint:.cyan))
+                            }
+                        }
+                    }
+                }
+                if control.name == "target-temperature" {
+                    HStack {
+                        Button { model.set(device,control,max(limits.lowerBound,(device.numeric(control) ?? draft)-step)) } label: { Image(systemName:"minus.circle.fill").font(.title2) }
+                        Spacer(); Text(device.display(control)).font(.system(size:24,weight:.medium,design:.rounded)).foregroundColor(Theme.mint); Spacer()
+                        Button { model.set(device,control,min(limits.upperBound,(device.numeric(control) ?? draft)+step)) } label: { Image(systemName:"plus.circle.fill").font(.title2) }
+                    }.padding(.vertical,5)
+                }
+                Slider(value:$draft,in:limits,step:step,onEditingChanged:{ active in editing=active; if !active { model.set(device,control,draft) } }).tint(control.name == "color-temperature" ? .orange : Theme.mint)
                 HStack { Text(String(format:"%g",limits.lowerBound)); Spacer(); Text(String(format:"%g",limits.upperBound)+control.unit) }.font(.system(size:9,design:.monospaced)).foregroundColor(Theme.muted)
             }
-        }.disabled(model.busy || device.numeric(control) == nil)
+        }.disabled(model.busy || (control.format == "bool" ? device.boolean(control) == nil : device.numeric(control) == nil))
             .onAppear { draft = min(limits.upperBound,max(limits.lowerBound,device.numeric(control) ?? limits.lowerBound)) }
-            .onChange(of:device.numeric(control)) { value in draft = min(limits.upperBound,max(limits.lowerBound,value ?? limits.lowerBound)) }
+            .onChange(of:device.numeric(control)) { value in if !editing { draft = min(limits.upperBound,max(limits.lowerBound,value ?? limits.lowerBound)) } }
             .padding(.bottom,4)
     }
 }
@@ -265,7 +297,7 @@ struct TouchPreview: View {
                 Text(d.power == nil ? "未确认" : d.power == true ? "已开启" : "已关闭").font(.system(size:10)).foregroundColor(Theme.muted)
                 Spacer()
                 Text("明确开／关").font(.system(size:10)).foregroundColor(Theme.mint)
-                if let c = d.controls.first(where:{$0.name != "on"}) { chip("\(c.label) \(d.display(c))",model.page.color) { } }
+                if let c = d.controls.first(where:{$0.name != "on" && $0.isWritable}) { chip("\(c.label) \(d.display(c))",model.page.color) { } }
             } else if let s = model.selectedScene {
                 chip("‹ 返回",.gray) {model.back()}; Text(s.name).font(.system(size:12,weight:.semibold)); Text("\(s.actionCount)个动作").font(.system(size:10)).foregroundColor(Theme.muted); Spacer(); Text("实机上再次点击“确认执行”").font(.system(size:10)).foregroundColor(.purple)
             }

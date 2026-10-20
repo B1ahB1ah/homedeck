@@ -11,6 +11,7 @@ final class HomeTouch: NSObject, NSTouchBarDelegate, NSScrubberDataSource, NSScr
     var scrubber: NSScrubber?
     var changeControl: Control?
     var selectedOptions: [Choice] = []
+    var optionPages: [String:Int] = [:]
     init(model: HomeModel) {
         self.model = model; super.init()
         bar.delegate = self
@@ -26,10 +27,10 @@ final class HomeTouch: NSObject, NSTouchBarDelegate, NSScrubberDataSource, NSScr
     @objc func show() {
         update()
         visible = HDShowBar(bar,trayID.rawValue)
-        if let t = model.lastUpdate, Date().timeIntervalSince(t) > 20 { model.refresh() }
+        model.barVisible=visible; model.requestStates()
         report()
     }
-    @objc func close() { HDHideBar(bar); visible = false; report() }
+    @objc func close() { HDHideBar(bar); visible = false; model.barVisible=false; report() }
     @objc func back() { model.back() }
     @objc func page(_ sender: NSButton) { model.changePage(Page.allCases[sender.tag]) }
     @objc func refresh() { model.refresh() }
@@ -37,13 +38,22 @@ final class HomeTouch: NSObject, NSTouchBarDelegate, NSScrubberDataSource, NSScr
     @objc func powerOff() { if let d = model.selectedDevice, let c = d.powerControl { model.set(d,c,false) } }
     @objc func cycleControl() {
         guard let d = model.selectedDevice else { return }
-        let controls = d.controls.filter { $0.name != "on" }
+        let controls = d.controls.filter { $0.name != "on" && $0.isWritable }
         guard !controls.isEmpty else { return }
         let i = controls.firstIndex { $0.id == model.touchControlID } ?? -1
         model.touchControlID = controls[(i+1)%controls.count].id
         update()
     }
     @objc func slider(_ sender: NSSlider) { if let d = model.selectedDevice, let c = changeControl { model.set(d,c,sender.doubleValue) } }
+    @objc func optionPage(_ sender: NSButton) {
+        guard let d=model.selectedDevice, let c=changeControl else { return }
+        let key=d.id+"/"+c.id
+        let current=optionPages[key] ?? ((c.options.firstIndex { $0.value == d.numeric(c) } ?? 0)/4)
+        optionPages[key]=min(max(0,(c.options.count-1)/4),max(0,current+sender.tag)); update()
+    }
+    @objc func boolean(_ sender: NSSegmentedControl) {
+        if let d=model.selectedDevice, let c=changeControl { model.set(d,c,sender.selectedSegment == 1) }
+    }
     @objc func option(_ sender: NSSegmentedControl) {
         let i = sender.selectedSegment
         if let d = model.selectedDevice, let c = changeControl, selectedOptions.indices.contains(i) { model.set(d,c,selectedOptions[i].value) }
@@ -96,24 +106,40 @@ final class HomeTouch: NSObject, NSTouchBarDelegate, NSScrubberDataSource, NSScr
         case .device:
             row.addArrangedSubview(button("‹",#selector(back),width:35))
             if let d = model.selectedDevice {
-                row.addArrangedSubview(text(d.shortName,width:112,color:d.group == "温控" ? .systemCyan : .systemOrange))
-                row.addArrangedSubview(text(d.power == nil ? "未确认" : d.power == true ? "已开" : "已关",width:45,color:.lightGray))
-                let on = button("开启",#selector(powerOn),tint:.systemGreen,width:64)
-                let off = button("关闭",#selector(powerOff),width:64)
+                row.addArrangedSubview(text(d.shortName,width:90,color:d.group == "温控" ? .systemCyan : .systemOrange))
+                row.addArrangedSubview(text(d.power == nil ? "未确认" : d.power == true ? "已开" : "已关",width:40,color:.lightGray))
+                let on = button("开启",#selector(powerOn),tint:.systemGreen,width:58)
+                let off = button("关闭",#selector(powerOff),width:58)
                 on.isEnabled = !model.busy && d.power != nil; off.isEnabled = on.isEnabled
                 row.addArrangedSubview(on); row.addArrangedSubview(off)
-                let controls = d.controls.filter { $0.name != "on" }
+                let controls = d.controls.filter { $0.name != "on" && $0.isWritable }
                 if let c = controls.first(where: { $0.id == model.touchControlID }) ?? controls.first {
                     changeControl = c
                     let selector = button(c.label + (controls.count > 1 ? " ⇄" : ""),#selector(cycleControl),width:80)
                     selector.isEnabled = !model.busy; row.addArrangedSubview(selector)
-                    if !c.options.isEmpty {
+                    if c.format == "bool" {
+                        let segments=NSSegmentedControl(labels:["关闭","开启"],trackingMode:.selectOne,target:self,action:#selector(boolean(_:)))
+                        segments.selectedSegment=d.boolean(c).map { $0 ? 1 : 0 } ?? -1
+                        segments.isEnabled = !model.busy && d.boolean(c) != nil
+                        segments.widthAnchor.constraint(equalToConstant:234).isActive=true
+                        row.addArrangedSubview(segments)
+                    } else if !c.options.isEmpty {
                         selectedOptions = c.options
-                        let segments = NSSegmentedControl(labels:c.options.map(\.label),trackingMode:.selectOne,target:self,action:#selector(option(_:)))
-                        segments.selectedSegment = c.options.firstIndex { $0.value == d.numeric(c) } ?? -1
-                        segments.widthAnchor.constraint(equalToConstant:260).isActive = true
+                        let key=d.id+"/"+c.id
+                        let page=optionPages[key] ?? ((c.options.firstIndex { $0.value == d.numeric(c) } ?? 0)/4)
+                        let start=min(page*4,max(0,c.options.count-1))
+                        selectedOptions=Array(c.options[start..<min(start+4,c.options.count)])
+                        if c.options.count>4 {
+                            let previous=button("‹",#selector(optionPage(_:)),width:25); previous.tag = -1; previous.isEnabled=page>0 && !model.busy; row.addArrangedSubview(previous)
+                        }
+                        let segments = NSSegmentedControl(labels:selectedOptions.map(\.label),trackingMode:.selectOne,target:self,action:#selector(option(_:)))
+                        segments.selectedSegment = selectedOptions.firstIndex { $0.value == d.numeric(c) } ?? -1
+                        segments.widthAnchor.constraint(equalToConstant:c.options.count>4 ? 170 : 234).isActive = true
                         segments.isEnabled = !model.busy && d.numeric(c) != nil
                         row.addArrangedSubview(segments)
+                        if c.options.count>4 {
+                            let next=button("›",#selector(optionPage(_:)),width:25); next.tag=1; next.isEnabled=(page+1)*4<c.options.count && !model.busy; row.addArrangedSubview(next)
+                        }
                     } else if let r = c.range, r.count >= 2 {
                         let low = c.name == "brightness" ? 1 : r[0], high = c.name == "brightness" ? 100 : r[1]
                         let slide = NSSlider(value:d.numeric(c) ?? low,minValue:low,maxValue:high,target:self,action:#selector(slider(_:)))
@@ -121,9 +147,9 @@ final class HomeTouch: NSObject, NSTouchBarDelegate, NSScrubberDataSource, NSScr
                         slide.widthAnchor.constraint(equalToConstant:233).isActive = true
                         row.addArrangedSubview(slide)
                     }
-                    row.addArrangedSubview(text(d.display(c),width:72,color:.lightGray))
+                    row.addArrangedSubview(text(d.display(c),width:64,color:.lightGray))
                 }
-                row.addArrangedSubview(text(model.busy ? "等待回读…" : "",width:95,color:.systemMint))
+                row.addArrangedSubview(text(model.pendingText(d.id) != nil ? "待确认…" : model.busy ? "同步中…" : "",width:72,color:.systemMint))
             }
         case .scene:
             row.addArrangedSubview(button("‹",#selector(back),width:35))

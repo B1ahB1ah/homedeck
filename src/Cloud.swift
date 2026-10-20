@@ -140,6 +140,7 @@ final class LoginFlow {
 }
 final class CloudClient {
     var auth: Credentials
+    var requestOverride: ((String,[String:Any]) async throws -> Any)?
     let network=Network(login:false)
     static let sceneList="/appgateway/miot/appsceneservice/AppSceneService/GetSimpleSceneList"
     static let sceneRun="/appgateway/miot/appsceneservice/AppSceneService/NewRunScene"
@@ -147,6 +148,7 @@ final class CloudClient {
     func request(_ path: String,_ payload: [String:Any]) async throws -> Any {
         let allowed=["/v2/homeroom/gethome_merged","/home/home_device_list","/miotspec/prop/get","/miotspec/prop/set",Self.sceneList,Self.sceneRun]
         guard allowed.contains(path), let security=Data(base64Encoded:auth.ssecurity), !security.isEmpty else { throw CloudError("未登录或接口不在支持范围。") }
+        if let override=requestOverride { return try await override(path,payload) }
         var random=[UInt8](repeating:0,count:8); guard SecRandomCopyBytes(kSecRandomDefault,8,&random) == errSecSuccess else { throw CloudError("无法生成安全请求随机数。") }
         let minute=UInt32(Date().timeIntervalSince1970/60)
         let nonce=Data(random+[UInt8((minute>>24)&255),UInt8((minute>>16)&255),UInt8((minute>>8)&255),UInt8(minute&255)])
