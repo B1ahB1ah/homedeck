@@ -17,6 +17,5 @@ done
 xcrun lipo -create "$BUILD/HomeDeckShare-arm64" "$BUILD/HomeDeckShare-x86_64" -output "$OUT/Contents/MacOS/HomeDeckShare"
 cp "$SOURCE/Info.plist" "$OUT/Contents/Info.plist"
 cp "$SOURCE/AppIcon.icns" "$OUT/Contents/Resources/AppIcon.icns"
-codesign --force --sign - "$OUT"
-codesign --verify --deep --strict "$OUT"
+python3 "$SOURCE/sign.py" "$OUT"
 echo "Built and verified: $OUT"

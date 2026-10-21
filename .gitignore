@@ -9,4 +9,8 @@ DerivedData/
 .env.*
 *.keychain*
 *.p12
+*.pem
+*.key
+identity.json
+__pycache__/
 *.mobileprovision

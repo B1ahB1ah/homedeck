@@ -7,13 +7,18 @@
 static void *dfr;
 static void (*presence)(NSString *, BOOL);
 BOOL HDInstallTray(NSCustomTouchBarItem *item) {
-    dfr = dlopen("/System/Library/PrivateFrameworks/DFRFoundation.framework/DFRFoundation", RTLD_LAZY);
+    if (!dfr) dfr = dlopen("/System/Library/PrivateFrameworks/DFRFoundation.framework/DFRFoundation", RTLD_LAZY);
     if (!dfr) return NO;
     presence = dlsym(dfr, "DFRElementSetControlStripPresenceForIdentifier");
     SEL add = NSSelectorFromString(@"addSystemTrayItem:");
     SEL show = NSSelectorFromString(@"presentSystemModalTouchBar:systemTrayItemIdentifier:");
     if (!presence || ![NSTouchBarItem respondsToSelector:add] || ![NSTouchBar respondsToSelector:show]) return NO;
     ((void (*)(id,SEL,id))objc_msgSend)(NSTouchBarItem.class, add, item);
+    presence(item.identifier, YES);
+    return YES;
+}
+BOOL HDKeepTrayVisible(NSCustomTouchBarItem *item) {
+    if (!presence) return NO;
     presence(item.identifier, YES);
     return YES;
 }

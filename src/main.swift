@@ -18,6 +18,7 @@ final class AppDelegate: NSObject,NSApplicationDelegate,NSWindowDelegate,NSMenuD
         menu.addItem(withTitle:"家控台 · 常驻运行",action:nil,keyEquivalent:"")
         menu.addItem(.separator())
         menu.addItem(withTitle:"展开 Touch Bar 控制台",action:#selector(showBar),keyEquivalent:"")
+        menu.addItem(withTitle:"恢复 Touch Bar 入口",action:#selector(repairEntry),keyEquivalent:"")
         menu.addItem(withTitle:"打开主面板",action:#selector(showWindow),keyEquivalent:"")
         menu.addItem(withTitle:"刷新设备状态",action:#selector(refresh),keyEquivalent:"")
         menu.addItem(.separator())
@@ -36,7 +37,11 @@ final class AppDelegate: NSObject,NSApplicationDelegate,NSWindowDelegate,NSMenuD
         window.minSize = NSSize(width:1060,height:770)
         window.delegate = self; window.isReleasedWhenClosed = false
         window.touchBar = touch.bar
-        NSWorkspace.shared.notificationCenter.addObserver(self,selector:#selector(didWake),name:NSWorkspace.didWakeNotification,object:nil)
+        let notifications=NSWorkspace.shared.notificationCenter
+        notifications.addObserver(self,selector:#selector(didWake),name:NSWorkspace.didWakeNotification,object:nil)
+        notifications.addObserver(self,selector:#selector(didWake),name:NSWorkspace.screensDidWakeNotification,object:nil)
+        notifications.addObserver(self,selector:#selector(didWake),name:NSWorkspace.sessionDidBecomeActiveNotification,object:nil)
+        notifications.addObserver(self,selector:#selector(controlStripLaunched(_:)),name:NSWorkspace.didLaunchApplicationNotification,object:nil)
         window.center(); showWindow(); model.start()
     }
     func menuWillOpen(_ menu: NSMenu) { loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off }
@@ -47,7 +52,11 @@ final class AppDelegate: NSObject,NSApplicationDelegate,NSWindowDelegate,NSMenuD
     func windowDidBecomeKey(_ notification: Notification) { model.windowVisible=true; model.requestStates() }
     func applicationDidBecomeActive(_ notification: Notification) { model.requestStates() }
     @objc func showBar() { if model.globalAvailable { touch.show() } else { showWindow(); model.failed = true; model.message = "当前系统未提供全局 Touch Bar 接口，仍可从主面板控制。" } }
-    @objc func didWake() { model.requestStates() }
+    @objc func didWake() { touch.scheduleEntryRecovery(reason:"wake-or-unlock"); model.requestStates() }
+    @objc func controlStripLaunched(_ notification: Notification) {
+        if let app=notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication, app.bundleIdentifier == "com.apple.controlstrip" { touch.scheduleEntryRecovery(reason:"control-strip-launched") }
+    }
+    @objc func repairEntry() { touch.recoverEntry(); touch.show() }
     @objc func refresh() { model.refresh() }
     @objc func toggleLogin() {
         do {
@@ -59,7 +68,7 @@ final class AppDelegate: NSObject,NSApplicationDelegate,NSWindowDelegate,NSMenuD
     @objc func quit() { NSApp.terminate(nil) }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldHandleReopen(_ sender: NSApplication,hasVisibleWindows flag: Bool) -> Bool { showWindow(); return true }
-    func applicationWillTerminate(_ notification: Notification) { touch.close(); HDRemoveTray(touch.tray) }
+    func applicationWillTerminate(_ notification: Notification) { touch.shutdown() }
 }
 let app = NSApplication.shared
 let delegate = AppDelegate()

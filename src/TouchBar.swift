@@ -15,6 +15,14 @@ final class HomeTouch: NSObject, NSTouchBarDelegate, NSScrubberDataSource, NSScr
     var changeControl: Control?
     var selectedOptions: [Choice] = []
     var optionPages: [String:Int] = [:]
+    var entryTimer: Timer?
+    var pendingRecovery: DispatchWorkItem?
+    var lastRecovery: Date?
+    var controlStripPID: pid_t = 0
+    var recoveryCount = 0
+    var lastRecoveryReason = "launch"
+    var entryMaintenanceSuspended = false
+    var currentControlStripPID: pid_t { NSRunningApplication.runningApplications(withBundleIdentifier:"com.apple.controlstrip").first?.processIdentifier ?? 0 }
     init(model: HomeModel) {
         self.model = model; super.init()
         row.orientation = .horizontal; row.spacing = 7; row.alignment = .centerY
@@ -28,9 +36,41 @@ final class HomeTouch: NSObject, NSTouchBarDelegate, NSScrubberDataSource, NSScr
         button.contentTintColor = .systemMint
         tray.view = button
         model.globalAvailable = HDInstallTray(tray)
+        controlStripPID = currentControlStripPID
+        entryTimer = Timer(timeInterval:30,repeats:true) { [weak self] _ in self?.maintainEntry() }
+        RunLoop.main.add(entryTimer!,forMode:.common)
     }
-    deinit { HDRemoveTray(tray) }
+    deinit { entryTimer?.invalidate(); pendingRecovery?.cancel(); HDRemoveTray(tray) }
+    func maintainEntry() {
+        guard !entryMaintenanceSuspended else { return }
+        let pid=currentControlStripPID
+        if !model.globalAvailable || pid != controlStripPID { recoverEntry(reason:"control-strip-restarted") }
+        else { _=HDKeepTrayVisible(tray) }
+    }
+    func scheduleEntryRecovery(reason: String) {
+        pendingRecovery?.cancel()
+        let work=DispatchWorkItem { [weak self] in self?.recoverEntry(reason:reason) }
+        pendingRecovery=work
+        DispatchQueue.main.asyncAfter(deadline:.now()+1,execute:work)
+    }
+    func recoverEntry(reason: String = "manual") {
+        guard !entryMaintenanceSuspended else { return }
+        // A previous successful call is not proof that Control Strip still has the item.
+        close(); HDRemoveTray(tray)
+        model.globalAvailable=HDInstallTray(tray)
+        controlStripPID=currentControlStripPID
+        recoveryCount += 1; lastRecovery=Date(); lastRecoveryReason=reason
+        DispatchQueue.main.asyncAfter(deadline:.now()+3) { [weak self] in
+            guard let self=self, !self.entryMaintenanceSuspended else { return }
+            _=HDKeepTrayVisible(self.tray)
+        }
+        report()
+    }
+    func shutdown() {
+        entryMaintenanceSuspended=true; entryTimer?.invalidate(); pendingRecovery?.cancel(); close(); HDRemoveTray(tray)
+    }
     @objc func show() {
+        _=HDKeepTrayVisible(tray)
         model.touchMode = .overview
         update()
         visible = HDShowBar(bar,trayID.rawValue)
@@ -69,11 +109,12 @@ final class HomeTouch: NSObject, NSTouchBarDelegate, NSScrubberDataSource, NSScr
     func report() {
         let root = FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask).first!.appendingPathComponent("HomeDeckShare")
         try? FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
-        let obj: [String:Any] = ["trayRegistered":model.globalAvailable,"presentationRequested":visible,"devices":model.devices.count,"scenes":model.scenes.count,"busy":model.busy,"page":model.page.rawValue,"viewReady":content != nil,"rootSubviews":row.arrangedSubviews.count,"rootWidth":row.frame.width,"rootHeight":row.frame.height,"date":ISO8601DateFormatter().string(from:Date())]
+        let obj: [String:Any] = ["trayRegistered":model.globalAvailable,"presentationRequested":visible,"devices":model.devices.count,"scenes":model.scenes.count,"busy":model.busy,"page":model.page.rawValue,"viewReady":content != nil,"rootSubviews":row.arrangedSubviews.count,"rootWidth":row.frame.width,"rootHeight":row.frame.height,"controlStripPID":controlStripPID,"entryRecoveryCount":recoveryCount,"lastEntryRecoveryReason":lastRecoveryReason,"lastEntryRecovery":lastRecovery.map { ISO8601DateFormatter().string(from:$0) } ?? "","date":ISO8601DateFormatter().string(from:Date())]
         if let data = try? JSONSerialization.data(withJSONObject:obj,options:.prettyPrinted) { try? data.write(to:root.appendingPathComponent("diagnostics.json"),options:.atomic) }
     }
     func touchBar(_ touchBar: NSTouchBar,makeItemForIdentifier identifier: NSTouchBarItem.Identifier) -> NSTouchBarItem? {
         guard identifier == contentID else { return nil }
+        if let content=content { return content }
         content = NSCustomTouchBarItem(identifier:identifier)
         content!.view = row
         update(); return content
